@@ -1,4 +1,8 @@
+import csv
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
@@ -6,6 +10,7 @@ from sklearn.pipeline import Pipeline
 
 from src.models.evaluate import evaluate_classifier
 from src.models.registry import MODEL_BUILDERS, build_model_registry
+from src.models.report import generate_model_reports
 from src.models.train import cross_validate_models, train_model
 
 
@@ -76,6 +81,48 @@ class ModelTests(unittest.TestCase):
         fitted_model = train_model(model, self.X, self.y)
         probabilities = fitted_model.predict_proba(self.X)
         self.assertEqual(probabilities.shape, (len(self.y), 2))
+
+    def test_report_generator_writes_comparison_csv_and_best_model_markdown(
+        self,
+    ) -> None:
+        groups = [
+            "trip-1",
+            "trip-1",
+            "trip-2",
+            "trip-2",
+            "trip-3",
+            "trip-3",
+            "trip-4",
+            "trip-4",
+        ]
+        with tempfile.TemporaryDirectory() as output_dir:
+            result = generate_model_reports(
+                self.X,
+                self.y,
+                self.X,
+                self.y,
+                trip_groups=groups,
+                output_dir=output_dir,
+                model_names=("logistic_regression",),
+                feature_names=("distance", "offset"),
+                n_splits=2,
+            )
+
+            self.assertEqual(result["best_model"], "logistic_regression")
+            with Path(result["csv_path"]).open(
+                newline="", encoding="utf-8"
+            ) as csv_file:
+                report_row = next(csv.DictReader(csv_file))
+            self.assertEqual(report_row["is_best"], "True")
+            self.assertGreater(float(report_row["validation_macro_f1"]), 0.9)
+            self.assertEqual(
+                len(json.loads(report_row["confusion_matrix_json"])),
+                2,
+            )
+            self.assertIn("distance", report_row["feature_importance_json"])
+            markdown = Path(result["markdown_path"]).read_text(encoding="utf-8")
+            self.assertIn("# Best model report: logistic_regression", markdown)
+            self.assertIn("Cross-validation", markdown)
 
     def test_train_and_evaluate_returns_candidate_and_top1_metrics(self) -> None:
         model = train_model(

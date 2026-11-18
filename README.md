@@ -89,6 +89,7 @@ other candidates when computing observation-level top-1 accuracy.
 
 ```python
 from src.models.registry import build_model_registry
+from src.models.report import generate_model_reports
 from src.models.train import cross_validate_models, train_model
 
 models = build_model_registry(
@@ -102,15 +103,28 @@ results = cross_validate_models(
     groups=trip_ids,
     model_names=("logistic_regression", "random_forest"),
 )
+
+report = generate_model_reports(
+    X_train,
+    y_train,
+    X_student_test,
+    y_student_test,
+    trip_groups=train_trip_ids,
+    feature_names=feature_names,
+    output_dir="results/model_reports",
+)
+print(report["csv_path"], report["markdown_path"])
 ```
 
 Cross-validation keeps all candidate rows from a trip together and reports
 fold-level and mean/std macro-F1, candidate accuracy, log loss, and timing.
 `evaluate_classifier` can additionally calculate per-observation top-1 accuracy
 when passed an `observation_ids` value for every candidate row. Feature
-generation and alignment of `.route` labels with candidate rows are not
-implemented yet, so those inputs must be prepared separately before training.
-LightGBM is imported only when its model is requested.
+generation and `.route` alignment helpers are in `src/features`; combine their
+outputs into numeric feature matrices and labels before calling the model APIs.
+The report generator writes a CSV row per model and a detailed Markdown report
+for the model with the highest student-test macro-F1. Keep evaluator data out of
+this comparison. LightGBM is imported only when its model is requested.
 
 ## Setup
 
