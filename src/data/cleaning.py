@@ -1,0 +1,70 @@
+"""Basic cleaning for loaded PathSnap GPS tracks."""
+
+import warnings
+from collections.abc import Mapping
+
+import numpy as np
+import pandas as pd
+
+
+_TRACK_COLUMNS = ("longitude", "latitude", "time")
+
+
+def clean_trip(trip: Mapping[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """Remove invalid/duplicate GPS observations and sort by time.
+
+    The nodes, arcs, and route tables are copied unchanged.
+    """
+    if "track" not in trip or not isinstance(trip["track"], pd.DataFrame):
+        raise ValueError("Trip must contain a 'track' DataFrame.")
+    if any(not isinstance(frame, pd.DataFrame) for frame in trip.values()):
+        raise ValueError("Every trip table must be a pandas DataFrame.")
+
+    track = trip["track"].copy()
+    missing_columns = [column for column in _TRACK_COLUMNS if column not in track]
+    if missing_columns:
+        raise ValueError(
+            f"'track' is missing columns: {', '.join(missing_columns)}."
+        )
+
+    for column in _TRACK_COLUMNS:
+        track[column] = pd.to_numeric(track[column], errors="coerce")
+
+    coordinates_and_time = track[list(_TRACK_COLUMNS)].to_numpy(dtype=float)
+    valid = np.isfinite(coordinates_and_time).all(axis=1)
+    valid &= track["longitude"].between(-180, 180).to_numpy()
+    valid &= track["latitude"].between(-90, 90).to_numpy()
+
+    invalid_count = int((~valid).sum())
+    track = track.loc[valid].copy()
+    before_deduplication = len(track)
+    track = track.drop_duplicates(
+        subset=list(_TRACK_COLUMNS),
+        keep="first",
+    )
+    duplicate_count = before_deduplication - len(track)
+    track = track.sort_values("time", kind="stable").reset_index(drop=True)
+
+    if track.empty:
+        raise ValueError("No valid GPS observations remain after cleaning.")
+    if invalid_count or duplicate_count:
+        warnings.warn(
+            f"Removed {invalid_count} invalid and {duplicate_count} duplicate "
+            "GPS observation(s).",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    cleaned = {name: frame.copy() for name, frame in trip.items()}
+    cleaned["track"] = track
+    return cleaned
+
+
+def clean_trips(
+    trips: Mapping[str, Mapping[str, pd.DataFrame]],
+) -> dict[str, dict[str, pd.DataFrame]]:
+    """Clean every trip while preserving trip IDs."""
+    return {
+        trip_id: clean_trip(trip)
+        for trip_id, trip in trips.items()
+    }

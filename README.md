@@ -52,10 +52,32 @@ data/raw/
 │       ├── 00000001.nodes     # longitude, latitude (row index = node id)
 │       ├── 00000001.arcs      # from_node, to_node (row index = arc id)
 │       └── 00000001.route     # ground-truth arc ids, in travel order
-└── student_test/              # 10 trips, same format
+├── student_test/              # 10 trips, same format
+└── eval/                      # 10 evaluator trips; keep separate
 ```
 
 Paths are set in [`configs/config.yaml`](configs/config.yaml).
+
+## Loading and inspecting trips
+
+Each numbered trip folder is one trip/case; the partition folders already define the training, student-testing, and evaluator-testing sets. The 80/10/10 values are trip counts, not a split ratio to apply again. `load_split` reads all trip folders directly inside one existing partition:
+
+```python
+from src.data.loaders import load_split
+
+train_trips = load_split("data/raw/train")
+student_test_trips = load_split("data/raw/student_test")
+```
+
+Keep the supplied partitions intact: never move observations or trips between them. Use training trips for fitting and cross-validation, student-testing trips for development-stage comparison, and evaluator-testing data only for final evaluation. Do not use evaluator labels for training, feature selection, or model selection.
+
+`validate_trip` returns a list of issues for one trip, and `validate_trips` returns issues keyed by trip ID. `clean_trip` and `clean_trips` remove invalid or duplicate GPS observations and sort tracks by time; they leave the nodes, arcs, and route tables unchanged. Cleaning emits a warning with the number of removed observations, and validation can be run again afterward.
+
+Run the data pipeline tests from the repository root to see a sample raw and cleaned track:
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 ## Setup
 
