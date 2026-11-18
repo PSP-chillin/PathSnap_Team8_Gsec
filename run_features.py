@@ -16,7 +16,7 @@ OUT = Path("features")
 OUT.mkdir(exist_ok=True)
 
 # output name -> folder under data/. Do NOT add the evaluator split.
-SPLITS = {"train": "training", "student_test": "student_testing"}
+SPLITS = {"train": Path("raw/train"), "student_test": Path("raw/student_test")}
 
 
 def process_trip(trip_dir: Path):
