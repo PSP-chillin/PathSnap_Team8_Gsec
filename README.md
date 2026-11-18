@@ -147,7 +147,10 @@ python3 report.py
 The script builds candidate features and route-aligned labels, runs trip-grouped
 cross-validation, writes `results/model_reports/model_comparison.csv`, and
 selects the best model by student-test macro-F1 for
-`results/model_reports/best_model_report.md`. Use `--models` and `--folds` to
-choose models or change the cross-validation fold count. If LightGBM is not
-installed in the active Python environment, the script prints a notice and
-reports the other installed models.
+`results/model_reports/best_model_report.md`. To keep the default run practical,
+it uses at most 25 evenly spaced observations per trip and 3 cross-validation
+folds, retaining all candidates for each sampled observation. The report records
+this sampling. Use `--max-observations-per-trip 0` and `--folds 5` to use all
+observations for a longer, full-data run. Use `--models` to choose models. If
+LightGBM is not installed in the active Python environment, the script prints a
+notice and reports the other installed models.

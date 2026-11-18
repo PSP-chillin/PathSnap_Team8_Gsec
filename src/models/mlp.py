@@ -14,7 +14,7 @@ def build_mlp(random_state: int = 42) -> Pipeline:
                 "classifier",
                 MLPClassifier(
                     hidden_layer_sizes=(64, 32),
-                    max_iter=300,
+                    max_iter=100,
                     random_state=random_state,
                 ),
             ),

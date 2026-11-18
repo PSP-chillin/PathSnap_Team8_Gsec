@@ -54,10 +54,17 @@ class CandidateDataset:
     candidate_coverage: float
     trip_count: int
     observation_count: int
+    sampled_observation_count: int
 
 
-def build_partition_dataset(partition_dir: str | Path) -> CandidateDataset:
-    """Create labeled candidate rows from all trips in one data partition."""
+def build_partition_dataset(
+    partition_dir: str | Path,
+    max_observations_per_trip: int | None = 25,
+) -> CandidateDataset:
+    """Create labeled candidates, sampling observations evenly within each trip."""
+    if max_observations_per_trip is not None and max_observations_per_trip < 1:
+        raise ValueError("max_observations_per_trip must be positive or None.")
+
     partition_dir = Path(partition_dir)
     if not partition_dir.is_dir():
         raise FileNotFoundError(f"Dataset partition not found: {partition_dir}")
@@ -71,6 +78,7 @@ def build_partition_dataset(partition_dir: str | Path) -> CandidateDataset:
     trip_groups: list[str] = []
     observation_ids: list[tuple[str, int]] = []
     total_observations = 0
+    sampled_observations = 0
     matched_observations = 0
     used_trip_count = 0
 
@@ -121,6 +129,29 @@ def build_partition_dataset(partition_dir: str | Path) -> CandidateDataset:
         matched_observations += int(
             labeled.groupby("obs_idx")["label"].max().sum()
         )
+        if (
+            max_observations_per_trip is not None
+            and len(gps) > max_observations_per_trip
+        ):
+            selected_observations = np.linspace(
+                0,
+                len(gps) - 1,
+                max_observations_per_trip,
+                dtype=int,
+            )
+            labeled = labeled[
+                labeled["obs_idx"].isin(selected_observations)
+            ]
+        else:
+            selected_observations = np.arange(len(gps))
+        sampled_observations += len(selected_observations)
+        if labeled.empty:
+            warnings.warn(
+                f"Skipping trip {trip_id}: sampled observations have no candidates.",
+                UserWarning,
+                stacklevel=2,
+            )
+            continue
 
         labeled["heading_match_available"] = (
             labeled["heading_diff"].notna().astype(float)
@@ -163,6 +194,7 @@ def build_partition_dataset(partition_dir: str | Path) -> CandidateDataset:
         ),
         trip_count=used_trip_count,
         observation_count=total_observations,
+        sampled_observation_count=sampled_observations,
     )
 
 
@@ -198,8 +230,17 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument(
         "--folds",
         type=int,
-        default=5,
+        default=3,
         help="Number of trip-grouped cross-validation folds.",
+    )
+    parser.add_argument(
+        "--max-observations-per-trip",
+        type=int,
+        default=25,
+        help=(
+            "Maximum observations retained per trip for faster modeling; "
+            "0 uses all observations."
+        ),
     )
     return parser.parse_args()
 
@@ -217,19 +258,30 @@ def main() -> None:
                 file=sys.stderr,
             )
 
+    sample_limit = args.max_observations_per_trip or None
     print(f"Building training features from {args.train_dir}...")
-    training = build_partition_dataset(args.train_dir)
+    training = build_partition_dataset(args.train_dir, sample_limit)
     print(f"Building validation features from {args.validation_dir}...")
-    validation = build_partition_dataset(args.validation_dir)
+    validation = build_partition_dataset(args.validation_dir, sample_limit)
     print(
         f"Training: {training.trip_count} trips, "
         f"{training.X.shape[0]} candidate rows, "
+        f"{training.sampled_observation_count} sampled observations, "
         f"{training.candidate_coverage:.1%} candidate coverage"
     )
     print(
         f"Validation: {validation.trip_count} trips, "
         f"{validation.X.shape[0]} candidate rows, "
+        f"{validation.sampled_observation_count} sampled observations, "
         f"{validation.candidate_coverage:.1%} candidate coverage"
+    )
+    sampling_description = (
+        "All observations used."
+        if sample_limit is None
+        else (
+            f"At most {sample_limit} evenly spaced observations per trip; "
+            "all candidates for selected observations retained."
+        )
     )
 
     result = generate_model_reports(
@@ -244,6 +296,7 @@ def main() -> None:
         observation_ids=validation.observation_ids,
         train_candidate_coverage=training.candidate_coverage,
         validation_candidate_coverage=validation.candidate_coverage,
+        sampling_description=sampling_description,
         n_splits=args.folds,
     )
     print(f"Best model by validation macro-F1: {result['best_model']}")

@@ -32,6 +32,9 @@ class ReportCliTests(unittest.TestCase):
             (trip_dir / "trip-1.route").write_text("0\n1\n", encoding="utf-8")
 
             dataset = build_partition_dataset(partition_dir)
+            sampled = build_partition_dataset(
+                partition_dir, max_observations_per_trip=2
+            )
 
         self.assertEqual(dataset.trip_count, 1)
         self.assertEqual(dataset.observation_count, 5)
@@ -41,6 +44,11 @@ class ReportCliTests(unittest.TestCase):
         self.assertTrue(np.isfinite(dataset.X).all())
         self.assertTrue((dataset.y == 1).any())
         self.assertGreater(dataset.candidate_coverage, 0)
+        self.assertEqual(sampled.observation_count, 5)
+        self.assertEqual(sampled.sampled_observation_count, 2)
+        self.assertEqual(len(set(sampled.observation_ids)), 2)
+        self.assertLess(len(sampled.y), len(dataset.y))
+        self.assertEqual(sampled.candidate_coverage, dataset.candidate_coverage)
 
 
 if __name__ == "__main__":

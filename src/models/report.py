@@ -59,6 +59,7 @@ _CSV_COLUMNS = (
     "feature_count",
     "train_candidate_coverage",
     "validation_candidate_coverage",
+    "sampling_description",
     "class_labels_json",
     "train_class_counts_json",
     "validation_class_counts_json",
@@ -161,6 +162,7 @@ def _markdown_report(
             f"- Numeric features: {record['feature_count']}",
             f"- Training candidate coverage: {train_coverage_text}",
             f"- Validation candidate coverage: {validation_coverage_text}",
+            f"- Sampling: {record['sampling_description']}",
             f"- Training label counts: `{train_class_counts}`",
             f"- Validation label counts: `{validation_class_counts}`",
             f"- Random state: {record['random_state']}",
@@ -266,6 +268,7 @@ def generate_model_reports(
     observation_ids: Sequence[Hashable] | None = None,
     train_candidate_coverage: float | None = None,
     validation_candidate_coverage: float | None = None,
+    sampling_description: str = "No observation subsampling applied.",
     n_splits: int = 5,
     random_state: int = 42,
 ) -> dict[str, Any]:
@@ -412,6 +415,7 @@ def generate_model_reports(
                 "feature_count": len(names),
                 "train_candidate_coverage": train_candidate_coverage,
                 "validation_candidate_coverage": validation_candidate_coverage,
+                "sampling_description": sampling_description,
                 "class_labels_json": json.dumps(classes.tolist(), default=_json_default),
                 "train_class_counts_json": json.dumps(
                     {
