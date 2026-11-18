@@ -1,0 +1,26 @@
+{
+  "name": "pathsnap-evaluator-ui",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Evaluator interface (Laptop 2) for the PathSnap map-matching API",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:mock": "vite --mode mock",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "leaflet": "1.9.4",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-leaflet": "4.2.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "4.3.4",
+    "vite": "5.4.11"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
