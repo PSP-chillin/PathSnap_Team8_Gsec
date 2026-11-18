@@ -1,6 +1,6 @@
 // Display helpers for metrics and durations.
 
-const PERCENT_KEYS = /(acc|precision|recall|f1|continuity|ratio|rate|score|overlap|iou|match)/i;
+const PERCENT_KEYS = /(acc|precision|recall|f1|continuity|coverage|ratio|rate|score|overlap|iou|match)/i;
 const HEADLINE_KEYS = ["accuracy", "point_accuracy", "top1_accuracy", "observation_accuracy", "route_accuracy"];
 
 export function isPercentMetric(key, value) {

@@ -172,3 +172,29 @@ Outputs are written to `results/mlp_tuning/`: a Markdown and JSON report, the
 Optuna trial history CSV, and the fitted `tuned_mlp.joblib` model. Use
 `--cv-only` to skip loading `student_test`, `--timeout` to cap search duration,
 or `--max-observations-per-trip 0` for a longer full-data run.
+
+### Deployed model and API (Laptop 1)
+
+Train the deployed classifier (the MLP selected above, same features as
+`report.py`, 150 evenly spaced observations per training trip):
+
+```bash
+python train_final_model.py
+```
+
+This writes `artifacts/final_model.joblib` and `artifacts/final_model.json`
+(settings, training rows, held-out student-test metrics). Then start the API:
+
+```bash
+python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+```
+
+For each requested trip the API cleans the track, generates candidate road
+segments, scores them with the classifier, and decodes the route with an
+HMM/Viterbi (`src/hmm/viterbi.py`): classifier probabilities are emissions,
+the match between network distance and GPS distance gives transitions, and
+time gaps over 60 s start a new chain. Accuracy is computed on the server
+against the reference route, which is never returned. Trips are served from
+`paths.eval_dir` in `configs/config.yaml` (or `PATHSNAP_TRIPS_DIR`); until the
+evaluator trips are copied there, the student-test trips are served. The
+evaluator interface is in `ui/` (see `ui/README.md`).
