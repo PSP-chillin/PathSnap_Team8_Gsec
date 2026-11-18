@@ -301,6 +301,9 @@ def main() -> None:
     )
     print(f"Best model by validation macro-F1: {result['best_model']}")
     print(f"Model comparison CSV: {result['csv_path']}")
+    print(f"Model comparison Markdown: {result['comparison_markdown_path']}")
+    print(f"Performance chart: {result['performance_chart_path']}")
+    print(f"Runtime chart: {result['runtime_chart_path']}")
     print(f"Best model Markdown: {result['markdown_path']}")
 
 

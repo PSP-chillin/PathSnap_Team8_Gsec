@@ -256,6 +256,187 @@ def _markdown_report(
     return "\n".join(lines)
 
 
+def _write_comparison_charts(
+    records: Sequence[dict[str, Any]],
+    output_dir: Path,
+) -> tuple[Path, Path]:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    ranked = sorted(
+        records,
+        key=lambda record: record["validation_macro_f1"],
+        reverse=True,
+    )
+    models = [record["model"] for record in ranked]
+    labels = [model.replace("_", "\n") for model in models]
+    best_model = ranked[0]["model"]
+    model_colors = [
+        "#2E8B57" if model == best_model else "#4C78A8"
+        for model in models
+    ]
+
+    performance_metrics = (
+        ("validation_macro_f1", "Validation macro-F1"),
+        ("validation_top1_accuracy", "Top-1 accuracy"),
+        ("cv_macro_f1_mean", "CV macro-F1"),
+    )
+    available_metrics = [
+        (key, label)
+        for key, label in performance_metrics
+        if any(record.get(key) is not None for record in ranked)
+    ]
+    positions = np.arange(len(models), dtype=float)
+    width = 0.8 / len(available_metrics)
+    figure, axis = plt.subplots(figsize=(max(8, len(models) * 1.8), 5))
+    for metric_index, (key, label) in enumerate(available_metrics):
+        offset = (metric_index - (len(available_metrics) - 1) / 2) * width
+        values = [
+            np.nan if record.get(key) is None else record[key]
+            for record in ranked
+        ]
+        errors = (
+            [
+                0.0 if record.get("cv_macro_f1_std") is None
+                else record["cv_macro_f1_std"]
+                for record in ranked
+            ]
+            if key == "cv_macro_f1_mean"
+            else None
+        )
+        axis.bar(
+            positions + offset,
+            values,
+            width,
+            label=label,
+            yerr=errors,
+            capsize=3 if errors is not None else 0,
+        )
+    axis.set_title("Validation and grouped cross-validation performance")
+    axis.set_ylabel("Score (higher is better)")
+    axis.set_ylim(0, 1.05)
+    axis.set_xticks(positions, labels)
+    axis.legend(loc="lower right")
+    axis.grid(axis="y", alpha=0.25)
+    figure.tight_layout()
+    performance_chart_path = output_dir / "model_performance.png"
+    figure.savefig(performance_chart_path, dpi=160)
+    plt.close(figure)
+
+    figure, axes = plt.subplots(1, 2, figsize=(11, max(4, len(models) * 0.8)))
+    for axis, key, title in (
+        (axes[0], "training_seconds", "Final model training"),
+        (axes[1], "inference_seconds", "Validation inference"),
+    ):
+        values = [
+            max(float(record.get(key) or 0.0), 1e-6) for record in ranked
+        ]
+        axis.barh(labels, values, color=model_colors)
+        axis.set_xscale("log")
+        axis.set_title(title)
+        axis.set_xlabel("Seconds (log scale)")
+        axis.grid(axis="x", alpha=0.25)
+        for position, value in enumerate(values):
+            axis.annotate(
+                f"{value:.3g}s",
+                (value, position),
+                xytext=(4, 0),
+                textcoords="offset points",
+                va="center",
+                fontsize=8,
+            )
+    figure.suptitle("Model runtime comparison (green = best macro-F1)")
+    figure.tight_layout()
+    runtime_chart_path = output_dir / "model_runtime.png"
+    figure.savefig(runtime_chart_path, dpi=160, bbox_inches="tight")
+    plt.close(figure)
+    return performance_chart_path, runtime_chart_path
+
+
+def _comparison_markdown(
+    records: Sequence[dict[str, Any]],
+    performance_chart_path: Path,
+    runtime_chart_path: Path,
+) -> str:
+    ranked = sorted(
+        records,
+        key=lambda record: record["validation_macro_f1"],
+        reverse=True,
+    )
+    summary = ranked[0]
+
+    def format_score(value: Any) -> str:
+        return "N/A" if value is None else f"{float(value):.4f}"
+
+    def format_percentage(value: Any) -> str:
+        return "N/A" if value is None else f"{float(value):.2%}"
+
+    lines = [
+        "# Model comparison",
+        "",
+        "Models are ranked by validation macro-F1 on the student-test partition. "
+        "The evaluator partition is not used for model selection.",
+        "",
+        "## At-a-glance comparison",
+        "",
+        "| Rank | Model | Validation macro-F1 | Top-1 accuracy | CV macro-F1 (mean ± std) | Balanced accuracy | Log loss |",
+        "| ---: | --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for rank, record in enumerate(ranked, start=1):
+        cv_score = format_score(record["cv_macro_f1_mean"])
+        cv_std = format_score(record["cv_macro_f1_std"])
+        lines.append(
+            f"| {rank} | {record['model']} | "
+            f"{format_score(record['validation_macro_f1'])} | "
+            f"{format_score(record['validation_top1_accuracy'])} | "
+            f"{cv_score} ± {cv_std} | "
+            f"{format_score(record['validation_balanced_accuracy'])} | "
+            f"{format_score(record['validation_log_loss'])} |"
+        )
+    lines.extend(
+        [
+            "",
+            f"**Best by validation macro-F1:** {summary['model']} "
+            f"({format_score(summary['validation_macro_f1'])}).",
+            "",
+            "## Performance charts",
+            "",
+            "![Validation and grouped cross-validation metrics]"
+            f"({performance_chart_path.name})",
+            "",
+            "Validation macro-F1 and top-1 accuracy are evaluated on candidate "
+            "rows and GPS observations respectively. Cross-validation scores "
+            "are grouped by trip; error bars show one standard deviation.",
+            "",
+            "## Runtime charts",
+            "",
+            f"![Training and inference time]({runtime_chart_path.name})",
+            "",
+            "Runtime is measured during this report run and can vary by machine "
+            "and system load. The horizontal axes use a logarithmic scale.",
+            "",
+            "## Dataset and run details",
+            "",
+            f"- Training candidate rows: {summary['train_rows']}",
+            f"- Validation candidate rows: {summary['validation_rows']}",
+            f"- Feature count: {summary['feature_count']}",
+            f"- Training candidate coverage: "
+            f"{format_percentage(summary['train_candidate_coverage'])}",
+            f"- Validation candidate coverage: "
+            f"{format_percentage(summary['validation_candidate_coverage'])}",
+            f"- Sampling: {summary['sampling_description']}",
+            f"- Cross-validation folds: {summary['cv_fold_count']}",
+            "",
+            "Candidate coverage measures whether the true route candidate was "
+            "generated; it is not a classifier score.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def generate_model_reports(
     X_train: ArrayLike,
     y_train: ArrayLike,
@@ -272,7 +453,7 @@ def generate_model_reports(
     n_splits: int = 5,
     random_state: int = 42,
 ) -> dict[str, Any]:
-    """Train and compare models; write a CSV and a Markdown report for the best.
+    """Train models and write a CSV, comparison report, charts, and best report.
 
     The comparison data should be the student-test partition, not the
     evaluator partition. ``trip_groups`` must contain the trip ID for each
@@ -456,13 +637,30 @@ def generate_model_reports(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     csv_path = output_path / "model_comparison.csv"
+    comparison_markdown_path = output_path / "model_comparison.md"
     markdown_path = output_path / "best_model_report.md"
+    performance_chart_path, runtime_chart_path = _write_comparison_charts(
+        records,
+        output_path,
+    )
 
     with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=_CSV_COLUMNS)
+        writer = csv.DictWriter(
+            csv_file,
+            fieldnames=_CSV_COLUMNS,
+            lineterminator="\n",
+        )
         writer.writeheader()
         writer.writerows(records)
 
+    comparison_markdown_path.write_text(
+        _comparison_markdown(
+            records,
+            performance_chart_path,
+            runtime_chart_path,
+        ),
+        encoding="utf-8",
+    )
     markdown_path.write_text(
         _markdown_report(
             best_name,
@@ -477,6 +675,9 @@ def generate_model_reports(
         "best_model": best_name,
         "selection_metric": "validation_macro_f1",
         "csv_path": csv_path,
+        "comparison_markdown_path": comparison_markdown_path,
+        "performance_chart_path": performance_chart_path,
+        "runtime_chart_path": runtime_chart_path,
         "markdown_path": markdown_path,
         "reports": records,
     }

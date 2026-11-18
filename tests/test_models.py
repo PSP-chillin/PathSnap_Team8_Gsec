@@ -109,6 +109,22 @@ class ModelTests(unittest.TestCase):
             )
 
             self.assertEqual(result["best_model"], "logistic_regression")
+            comparison_markdown_path = Path(
+                result["comparison_markdown_path"]
+            )
+            performance_chart_path = Path(result["performance_chart_path"])
+            runtime_chart_path = Path(result["runtime_chart_path"])
+            self.assertTrue(comparison_markdown_path.is_file())
+            self.assertTrue(performance_chart_path.is_file())
+            self.assertTrue(runtime_chart_path.is_file())
+            self.assertTrue(
+                performance_chart_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+            )
+            self.assertTrue(
+                runtime_chart_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+            )
+            csv_content = Path(result["csv_path"]).read_bytes()
+            self.assertNotIn(b"\r", csv_content)
             with Path(result["csv_path"]).open(
                 newline="", encoding="utf-8"
             ) as csv_file:
@@ -123,6 +139,12 @@ class ModelTests(unittest.TestCase):
             markdown = Path(result["markdown_path"]).read_text(encoding="utf-8")
             self.assertIn("# Best model report: logistic_regression", markdown)
             self.assertIn("Cross-validation", markdown)
+            comparison_markdown = comparison_markdown_path.read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("# Model comparison", comparison_markdown)
+            self.assertIn("model_performance.png", comparison_markdown)
+            self.assertIn("model_runtime.png", comparison_markdown)
 
     def test_train_and_evaluate_returns_candidate_and_top1_metrics(self) -> None:
         model = train_model(
