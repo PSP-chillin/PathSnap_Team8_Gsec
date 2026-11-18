@@ -1,10 +1,13 @@
 # PathSnap: Map-Matching & Route Reconstruction
 
-**Team 8** · UE24CS352A Machine Learning · PES University, RR Campus
+**Team 8** · UE24CS352A Machine Learning · PES University, EC Campus
 
 | Team member | SRN |
-|---|---|
-| _TBD_ | _TBD_ |
+|-------------|-----|
+|Prithvi S P  | PES2UG24CS375 |
+| Rohan Chirbi | PES2UG24CS408 |
+| Priyaan G | PES2UG24CS376 |
+| Sahana M S | PES2UG24CS426 |
 
 ## Problem
 
