@@ -55,6 +55,28 @@ class ModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unknown model"):
             build_model_registry(model_names=("not_a_model",))
 
+    def test_available_model_builders_fit_and_return_probabilities(self) -> None:
+        models = build_model_registry(
+            model_names=("logistic_regression", "random_forest", "knn", "mlp")
+        )
+
+        for model_name, model in models.items():
+            with self.subTest(model=model_name):
+                fitted_model = train_model(model, self.X, self.y)
+                probabilities = fitted_model.predict_proba(self.X)
+                self.assertEqual(probabilities.shape, (len(self.y), 2))
+                self.assertTrue(np.isfinite(probabilities).all())
+
+    def test_lightgbm_builder_fits_when_dependency_is_installed(self) -> None:
+        try:
+            model = build_model_registry(model_names=("lightgbm",))["lightgbm"]
+        except ImportError as exc:
+            self.skipTest(str(exc))
+
+        fitted_model = train_model(model, self.X, self.y)
+        probabilities = fitted_model.predict_proba(self.X)
+        self.assertEqual(probabilities.shape, (len(self.y), 2))
+
     def test_train_and_evaluate_returns_candidate_and_top1_metrics(self) -> None:
         model = train_model(
             build_model_registry(model_names=("logistic_regression",))[

@@ -73,10 +73,10 @@ Keep the supplied partitions intact: never move observations or trips between th
 
 `validate_trip` returns a list of issues for one trip, and `validate_trips` returns issues keyed by trip ID. Empty files load as empty DataFrames so validation can report them. `clean_trips` drops and warns about a trip if any required table is empty; missing files or required columns raise an error instead. For retained trips, cleaning removes invalid or duplicate GPS observations and sorts tracks by time; it leaves the nodes, arcs, and route tables unchanged. Validation can be run again afterward.
 
-Run the data pipeline tests from the repository root to see a sample raw and cleaned track:
+Run the data, feature, and model tests from the repository root:
 
 ```bash
-python -m unittest discover -s tests -v
+python -m pytest
 ```
 
 ## Models

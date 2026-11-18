@@ -45,7 +45,8 @@ class RoadNetwork:
         """Directed driving distance from a point on arc_a to a point on arc_b (inf if unreachable/too far)."""
         la, lb = self.len[arc_a], self.len[arc_b]
         if arc_a == arc_b and along_b >= along_a:
-            return float(along_b - along_a)
+            distance = float(along_b - along_a)
+            return distance if distance <= cutoff else np.inf
         rest_a = la - along_a
         if rest_a + along_b > cutoff:
             return np.inf

@@ -2,9 +2,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.features.candidate_features import Geometry, candidate_features, point_segment_geometry
+from src.features.candidate_features import (
+    Geometry,
+    candidate_features,
+    generate_candidates,
+    point_segment_geometry,
+)
 from src.features.geo import angular_diff_deg, haversine_m, initial_bearing_deg
 from src.features.gps_features import add_gps_features
+from src.features.labels import align_track_to_route, label_candidates
 from src.features.network_features import RoadNetwork, arc_relation, local_arc_properties, transition_features
 from src.features.pipeline import build_trip_features
 from src.features.temporal_features import add_temporal_features
@@ -58,6 +64,43 @@ def test_arc_length_bearing_and_candidate_features():
     assert cf.loc[1, "heading_diff"] == pytest.approx(180, abs=0.1) and cf.loc[1, "is_opposite_dir"] == 1
 
 
+def test_candidate_distance_ranks_do_not_depend_on_input_order():
+    nodes, arcs = _grid()
+    g = Geometry(nodes, arcs, ref=(0, 0))
+    gps = pd.DataFrame(
+        {"longitude": [0.0005], "latitude": [0.00002], "time": [0.0], "heading": [90.0]}
+    )
+    px, py = g.project_track(gps)
+    candidates = pd.DataFrame({"obs_idx": [0, 0], "arc_id": [3, 0]})
+
+    features = candidate_features(gps, px, py, candidates, g)
+
+    ranks = features.set_index("arc_id")["dist_rank"]
+    assert ranks[0] == 1
+    assert ranks[3] == 2
+
+
+def test_candidate_search_returns_nearest_arcs_within_radius():
+    nodes, arcs = _grid()
+    g = Geometry(nodes, arcs, ref=(0, 0))
+    px, py = g.project_track(
+        pd.DataFrame({"longitude": [0.0005], "latitude": [0.00002]})
+    )
+
+    candidates = generate_candidates(px, py, g, k=2, radius_m=120)
+
+    distances = point_segment_geometry(
+        px[0],
+        py[0],
+        g.arc_table["x1"].to_numpy(),
+        g.arc_table["y1"].to_numpy(),
+        g.arc_table["x2"].to_numpy(),
+        g.arc_table["y2"].to_numpy(),
+    )[0]
+    expected = np.argsort(distances, kind="stable")[:2].tolist()
+    assert candidates["arc_id"].tolist() == expected
+
+
 def test_connectivity_and_route_distance():
     nodes, arcs = _grid()
     g = Geometry(nodes, arcs, ref=(0, 0))
@@ -70,8 +113,52 @@ def test_connectivity_and_route_distance():
     assert net.route_distance(0, 20.0, 1, 10.0) == pytest.approx(L[0] - 20 + 10)
     assert net.route_distance(0, 20.0, 3, 10.0) == pytest.approx(L[0] - 20 + 10)   # via node 1
     assert net.route_distance(3, 0.0, 0, 0.0) == np.inf                           # dead end at node 3
+    assert net.route_distance(0, 0.0, 0, 100.0, cutoff=50.0) == np.inf
     p = local_arc_properties(g.arc_table, 4)
     assert p.loc[3, "is_dead_end"] == 1 and p.loc[0, "to_is_intersection"] == 1 and p.loc[0, "has_reverse_arc"] == 0
+
+
+def test_route_alignment_and_candidate_labels():
+    nodes, arcs = _grid()
+    g = Geometry(nodes, arcs, ref=(0, 0))
+    track = pd.DataFrame(
+        {"longitude": [0.0005, 0.0015], "latitude": [0, 0], "time": [0, 1]}
+    )
+    px, py = g.project_track(track)
+
+    ref_arc, route_pos, distance = align_track_to_route(px, py, [0, 1], g)
+    labeled = label_candidates(
+        pd.DataFrame(
+            {"obs_idx": [0, 0, 1, 1], "arc_id": [0, 3, 0, 1]}
+        ),
+        ref_arc,
+    )
+
+    assert ref_arc.tolist() == [0, 1]
+    assert route_pos.tolist() == [0, 1]
+    assert (distance < 1).all()
+    assert labeled["label"].tolist() == [1, 0, 0, 1]
+    assert labeled["ref_in_candidates"].tolist() == [1, 1, 1, 1]
+    with pytest.raises(ValueError, match="non-empty"):
+        align_track_to_route(px, py, [], g)
+
+
+def test_route_alignment_advances_across_clipped_cost_ties():
+    nodes, arcs = _grid()
+    g = Geometry(nodes, arcs, ref=(0, 0))
+    track = pd.DataFrame(
+        {
+            "longitude": [0.0002, 0.0006, 0.0011, 0.0015, 0.0018],
+            "latitude": [0, 0, 0, 0, 0],
+        }
+    )
+    px, py = g.project_track(track)
+
+    _, route_pos, distance = align_track_to_route(px, py, [0, 1], g)
+
+    assert (np.diff(route_pos) >= 0).all()
+    assert route_pos[-1] == 1
+    assert (distance < 1).all()
 
 
 def test_transition_feasibility():

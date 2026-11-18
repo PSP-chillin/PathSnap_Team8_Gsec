@@ -5,6 +5,7 @@ A candidate set is a DataFrame with columns [obs_idx, arc_id].
 """
 import numpy as np
 import pandas as pd
+from scipy.spatial import cKDTree
 
 from .geo import angular_diff_deg, make_projector, xy_bearing_deg
 
@@ -51,19 +52,53 @@ def point_segment_geometry(px, py, x1, y1, x2, y2):
 
 
 def generate_candidates(px, py, geom: Geometry, k: int = 10, radius_m: float = 100.0, chunk: int = 256) -> pd.DataFrame:
-    """k nearest arcs within radius_m of each observation (brute force, chunked)."""
+    """Find the k nearest arcs within radius_m using an exact spatial prefilter."""
+    if not isinstance(k, (int, np.integer)) or k < 1:
+        raise ValueError("k must be a positive integer.")
+    if not np.isfinite(radius_m) or radius_m < 0:
+        raise ValueError("radius_m must be finite and non-negative.")
+    if not isinstance(chunk, (int, np.integer)) or chunk < 1:
+        raise ValueError("chunk must be a positive integer.")
+
+    px, py = np.asarray(px, dtype=float), np.asarray(py, dtype=float)
+    if px.ndim != 1 or py.ndim != 1 or len(px) != len(py):
+        raise ValueError("px and py must be 1D arrays of equal length.")
+    if not np.isfinite(px).all() or not np.isfinite(py).all():
+        raise ValueError("px and py must contain only finite coordinates.")
+
     at = geom.arc_table
+    if len(at) == 0 or len(px) == 0:
+        return pd.DataFrame(columns=["obs_idx", "arc_id"], dtype=int)
+
+    x1, y1 = at["x1"].to_numpy(), at["y1"].to_numpy()
+    x2, y2 = at["x2"].to_numpy(), at["y2"].to_numpy()
+    if not np.isfinite(np.column_stack((x1, y1, x2, y2))).all():
+        raise ValueError("Arc geometry must contain only finite coordinates.")
+    centers = np.column_stack(((x1 + x2) / 2, (y1 + y2) / 2))
+    tree = cKDTree(centers)
+    search_radius = radius_m + at["seg_length"].max() / 2
+
     rows = []
     for s in range(0, len(px), chunk):
         e = min(s + chunk, len(px))
-        d = point_segment_geometry(px[s:e, None], py[s:e, None], at["x1"].to_numpy()[None], at["y1"].to_numpy()[None],
-                                   at["x2"].to_numpy()[None], at["y2"].to_numpy()[None])[0]
-        kk = min(k, d.shape[1])
-        idx = np.argpartition(d, kk - 1, axis=1)[:, :kk]
-        for i in range(e - s):
-            for j in idx[i]:
-                if d[i, j] <= radius_m:
-                    rows.append((s + i, int(j)))
+        points = np.column_stack((px[s:e], py[s:e]))
+        nearby_arcs = tree.query_ball_point(points, search_radius)
+        for offset, arc_indices in enumerate(nearby_arcs):
+            if not arc_indices:
+                continue
+            indices = np.asarray(arc_indices, dtype=int)
+            distances = point_segment_geometry(
+                px[s + offset],
+                py[s + offset],
+                x1[indices],
+                y1[indices],
+                x2[indices],
+                y2[indices],
+            )[0]
+            within_radius = distances <= radius_m
+            indices, distances = indices[within_radius], distances[within_radius]
+            nearest = np.argsort(distances, kind="stable")[:k]
+            rows.extend((s + offset, int(indices[i])) for i in nearest)
     return pd.DataFrame(rows, columns=["obs_idx", "arc_id"], dtype=int)
 
 
@@ -87,6 +122,6 @@ def candidate_features(gps: pd.DataFrame, px, py, cands: pd.DataFrame, geom: Geo
     c["is_endpoint_snap"] = ((c["proj_frac"] <= 0) | (c["proj_frac"] >= 1)).astype(int)
     g = c.groupby("obs_idx")["perp_dist"]
     c["n_candidates"] = g.transform("size")
-    c["dist_rank"] = g.rank(method="first")
+    c["dist_rank"] = g.rank(method="min")
     c["dist_minus_min"] = c["perp_dist"] - g.transform("min")
     return c
