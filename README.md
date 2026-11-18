@@ -79,6 +79,39 @@ Run the data pipeline tests from the repository root to see a sample raw and cle
 python -m unittest discover -s tests -v
 ```
 
+## Models
+
+The model modules provide Logistic Regression, Random Forest, KNN, MLP, and
+LightGBM classifiers for candidate-arc features. They accept a numeric feature
+matrix `X` and candidate labels `y`; `groups` contains the trip ID for each
+candidate row. Labels should use `1` for the ground-truth candidate and `0` for
+other candidates when computing observation-level top-1 accuracy.
+
+```python
+from src.models.registry import build_model_registry
+from src.models.train import cross_validate_models, train_model
+
+models = build_model_registry(
+    model_names=("logistic_regression", "random_forest")
+)
+fitted_model = train_model(models["logistic_regression"], X_train, y_train)
+
+results = cross_validate_models(
+    X_train,
+    y_train,
+    groups=trip_ids,
+    model_names=("logistic_regression", "random_forest"),
+)
+```
+
+Cross-validation keeps all candidate rows from a trip together and reports
+fold-level and mean/std macro-F1, candidate accuracy, log loss, and timing.
+`evaluate_classifier` can additionally calculate per-observation top-1 accuracy
+when passed an `observation_ids` value for every candidate row. Feature
+generation and alignment of `.route` labels with candidate rows are not
+implemented yet, so those inputs must be prepared separately before training.
+LightGBM is imported only when its model is requested.
+
 ## Setup
 
 ```bash
