@@ -15,8 +15,8 @@ Selected by validation macro-F1. Use the student-test partition for model compar
 | validation_log_loss | 0.112621 |
 | validation_roc_auc | 0.978239 |
 | validation_top1_accuracy | 0.816000 |
-| training_seconds | 8.549833 |
-| inference_seconds | 0.008665 |
+| training_seconds | 8.494527 |
+| inference_seconds | 0.011011 |
 
 ## Dataset summary
 
@@ -37,16 +37,16 @@ Selected by validation macro-F1. Use the student-test partition for model compar
 | macro_f1 | 0.879088 | 0.003971 |
 | candidate_accuracy | 0.953168 | 0.001864 |
 | log_loss | 0.126194 | 0.006450 |
-| fit_seconds | 4.899142 | 1.085833 |
-| inference_seconds | 0.012675 | 0.004188 |
+| fit_seconds | 4.798394 | 1.104097 |
+| inference_seconds | 0.011888 | 0.003610 |
 
 ### Per-fold scores
 
 | Fold | Macro-F1 | Accuracy | Log loss | Fit seconds | Inference seconds |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 0.877104 | 0.954060 | 0.121565 | 5.640291 | 0.017201 |
-| 2 | 0.875530 | 0.950573 | 0.135315 | 5.693287 | 0.013720 |
-| 3 | 0.884629 | 0.954870 | 0.121702 | 3.363847 | 0.007104 |
+| 1 | 0.877104 | 0.954060 | 0.121565 | 5.552462 | 0.015306 |
+| 2 | 0.875530 | 0.950573 | 0.135315 | 5.605455 | 0.013462 |
+| 3 | 0.884629 | 0.954870 | 0.121702 | 3.237266 | 0.006895 |
 
 ## Confusion matrix
 

@@ -21,6 +21,14 @@ def clean_trip(trip: Mapping[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
 
     The nodes, arcs, and route tables are copied unchanged.
     """
+    cleaned, _ = clean_trip_with_stats(trip)
+    return cleaned
+
+
+def clean_trip_with_stats(
+    trip: Mapping[str, pd.DataFrame],
+) -> tuple[dict[str, pd.DataFrame], dict[str, int]]:
+    """Clean one trip and return counts of invalid and duplicate track rows."""
     if any(not isinstance(frame, pd.DataFrame) for frame in trip.values()):
         raise ValueError("Every trip table must be a pandas DataFrame.")
 
@@ -68,7 +76,10 @@ def clean_trip(trip: Mapping[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
 
     cleaned = {name: frame.copy() for name, frame in trip.items()}
     cleaned["track"] = track
-    return cleaned
+    return cleaned, {
+        "invalid_track_rows": invalid_count,
+        "duplicate_track_rows": duplicate_count,
+    }
 
 
 def clean_trips(

@@ -5,8 +5,13 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.data.cleaning import clean_trip, clean_trips
+from src.data.cleaning import clean_trip, clean_trip_with_stats, clean_trips
 from src.data.loaders import load_split, load_trip
+from src.data.report import (
+    PartitionDataSummary,
+    TripDataSummary,
+    write_data_quality_report,
+)
 from src.data.validation import validate_trip, validate_trips
 
 
@@ -110,6 +115,61 @@ class DataPipelineTests(unittest.TestCase):
         pd.testing.assert_frame_equal(cleaned["arcs"], original_arcs)
         pd.testing.assert_frame_equal(cleaned["route"], original_route)
         self.assertEqual(len(trip["track"]), 5)
+
+    def test_clean_trip_with_stats_reports_removed_track_rows(self) -> None:
+        trip = make_trip(
+            pd.DataFrame(
+                {
+                    "longitude": [-122.1, -122.1, 181],
+                    "latitude": [37.4, 37.4, 37.5],
+                    "time": [1, 1, 2],
+                }
+            )
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            cleaned, stats = clean_trip_with_stats(trip)
+
+        self.assertEqual(len(cleaned["track"]), 1)
+        self.assertEqual(stats["invalid_track_rows"], 1)
+        self.assertEqual(stats["duplicate_track_rows"], 1)
+
+    def test_data_quality_report_writes_markdown_and_chart(self) -> None:
+        trip = TripDataSummary(
+            trip_id="trip-1",
+            raw_table_rows={"track": 3, "nodes": 2, "arcs": 1, "route": 1},
+            cleaned_table_rows={"track": 1, "nodes": 2, "arcs": 1, "route": 1},
+            invalid_track_rows=1,
+            duplicate_track_rows=1,
+            raw_validation_issues=("'track.longitude' has invalid values.",),
+            post_clean_validation_issues=(),
+            status="Included in model dataset",
+        )
+        partition = PartitionDataSummary(
+            name="train",
+            source_dir=Path("train"),
+            trips=[trip],
+            candidate_rows=4,
+            candidate_coverage=0.75,
+            observation_count=1,
+            sampled_observation_count=1,
+            model_trip_count=1,
+        )
+        with tempfile.TemporaryDirectory() as output_dir:
+            paths = write_data_quality_report(
+                [partition],
+                output_dir,
+                "All observations used.",
+            )
+
+            markdown = paths["markdown_path"].read_text(encoding="utf-8")
+            chart = paths["chart_path"].read_bytes()
+
+        self.assertIn("Data cleaning and validation report", markdown)
+        self.assertIn("invalid values", markdown)
+        self.assertIn("data_quality_summary.png", markdown)
+        self.assertTrue(chart.startswith(b"\x89PNG\r\n\x1a\n"))
 
     def test_clean_trips_preserves_trip_ids_and_rejects_empty_clean_result(self) -> None:
         trips = {"trip-1": make_trip()}

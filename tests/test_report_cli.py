@@ -44,6 +44,13 @@ class ReportCliTests(unittest.TestCase):
         self.assertTrue(np.isfinite(dataset.X).all())
         self.assertTrue((dataset.y == 1).any())
         self.assertGreater(dataset.candidate_coverage, 0)
+        trip_quality = dataset.data_quality.trips[0]
+        self.assertEqual(trip_quality.raw_table_rows["track"], 5)
+        self.assertEqual(
+            trip_quality.cleaned_table_rows,
+            {"track": 5, "nodes": 4, "arcs": 4, "route": 2},
+        )
+        self.assertEqual(trip_quality.status, "Included in model dataset")
         self.assertEqual(sampled.observation_count, 5)
         self.assertEqual(sampled.sampled_observation_count, 2)
         self.assertEqual(len(set(sampled.observation_ids)), 2)

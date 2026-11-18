@@ -10,8 +10,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.data.cleaning import clean_trip
+from src.data.cleaning import clean_trip_with_stats
 from src.data.loaders import load_trip
+from src.data.report import (
+    PartitionDataSummary,
+    TripDataSummary,
+    write_data_quality_report,
+)
 from src.data.validation import validate_trip
 from src.features.candidate_features import (
     Geometry,
@@ -55,6 +60,7 @@ class CandidateDataset:
     trip_count: int
     observation_count: int
     sampled_observation_count: int
+    data_quality: PartitionDataSummary
 
 
 def build_partition_dataset(
@@ -81,14 +87,30 @@ def build_partition_dataset(
     sampled_observations = 0
     matched_observations = 0
     used_trip_count = 0
+    trip_summaries: list[TripDataSummary] = []
 
     for trip_dir in trip_dirs:
         trip_id = trip_dir.name
         trip = load_trip(trip_dir)
+        raw_validation_issues = tuple(validate_trip(trip))
+        trip_summary = TripDataSummary(
+            trip_id=trip_id,
+            raw_table_rows={name: len(trip[name]) for name in EMPTY_REQUIRED_TABLES},
+            cleaned_table_rows=None,
+            invalid_track_rows=0,
+            duplicate_track_rows=0,
+            raw_validation_issues=raw_validation_issues,
+            post_clean_validation_issues=(),
+            status="Not processed",
+        )
+        trip_summaries.append(trip_summary)
         empty_tables = [
             name for name in EMPTY_REQUIRED_TABLES if trip[name].empty
         ]
         if empty_tables:
+            trip_summary.status = (
+                "Dropped: empty required table(s): " + ", ".join(empty_tables)
+            )
             warnings.warn(
                 f"Skipping trip {trip_id}: empty table(s): "
                 f"{', '.join(empty_tables)}.",
@@ -97,13 +119,23 @@ def build_partition_dataset(
             )
             continue
 
-        trip = clean_trip(trip)
+        trip, cleaning_stats = clean_trip_with_stats(trip)
+        trip_summary.cleaned_table_rows = {
+            name: len(trip[name]) for name in EMPTY_REQUIRED_TABLES
+        }
+        trip_summary.invalid_track_rows = cleaning_stats["invalid_track_rows"]
+        trip_summary.duplicate_track_rows = cleaning_stats[
+            "duplicate_track_rows"
+        ]
         issues = validate_trip(trip)
+        trip_summary.post_clean_validation_issues = tuple(issues)
         if issues:
+            trip_summary.status = "Failed post-clean validation"
             raise ValueError(
                 f"Trip {trip_id} failed validation after cleaning: "
                 + "; ".join(issues)
             )
+        trip_summary.status = "Cleaned and validated"
 
         gps = add_temporal_features(add_gps_features(trip["track"]))
         geometry = Geometry(trip["nodes"], trip["arcs"])
@@ -111,6 +143,7 @@ def build_partition_dataset(
         candidates = generate_candidates(px, py, geometry)
         total_observations += len(gps)
         if candidates.empty:
+            trip_summary.status = "Skipped: no candidates generated"
             warnings.warn(
                 f"Skipping trip {trip_id}: no road candidates were generated.",
                 UserWarning,
@@ -146,6 +179,9 @@ def build_partition_dataset(
             selected_observations = np.arange(len(gps))
         sampled_observations += len(selected_observations)
         if labeled.empty:
+            trip_summary.status = (
+                "Skipped: sampled observations have no candidates"
+            )
             warnings.warn(
                 f"Skipping trip {trip_id}: sampled observations have no candidates.",
                 UserWarning,
@@ -176,31 +212,48 @@ def build_partition_dataset(
             (trip_id, int(obs_idx)) for obs_idx in labeled["obs_idx"]
         )
         used_trip_count += 1
+        trip_summary.status = "Included in model dataset"
 
     if not feature_rows:
         raise ValueError(
             f"No labeled candidate rows could be built from {partition_dir}."
         )
 
+    X = np.concatenate(feature_rows, axis=0)
+    candidate_coverage = (
+        matched_observations / total_observations
+        if total_observations
+        else 0.0
+    )
     return CandidateDataset(
-        X=np.concatenate(feature_rows, axis=0),
+        X=X,
         y=np.concatenate(labels),
         trip_groups=trip_groups,
         observation_ids=observation_ids,
-        candidate_coverage=(
-            matched_observations / total_observations
-            if total_observations
-            else 0.0
-        ),
+        candidate_coverage=candidate_coverage,
         trip_count=used_trip_count,
         observation_count=total_observations,
         sampled_observation_count=sampled_observations,
+        data_quality=PartitionDataSummary(
+            name=partition_dir.name,
+            source_dir=partition_dir,
+            trips=trip_summaries,
+            candidate_rows=len(X),
+            candidate_coverage=candidate_coverage,
+            observation_count=sum(
+                trip.cleaned_table_rows["track"]
+                for trip in trip_summaries
+                if trip.cleaned_table_rows is not None
+            ),
+            sampled_observation_count=sampled_observations,
+            model_trip_count=used_trip_count,
+        ),
     )
 
 
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate model comparison CSV and best-model Markdown."
+        description="Generate data-quality and model-comparison reports."
     )
     parser.add_argument(
         "--train-dir",
@@ -283,6 +336,13 @@ def main() -> None:
             "all candidates for selected observations retained."
         )
     )
+    data_report = write_data_quality_report(
+        [training.data_quality, validation.data_quality],
+        args.output_dir,
+        sampling_description,
+    )
+    print(f"Data quality Markdown: {data_report['markdown_path']}")
+    print(f"Data quality chart: {data_report['chart_path']}")
 
     result = generate_model_reports(
         training.X,
