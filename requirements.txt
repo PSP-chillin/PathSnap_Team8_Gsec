@@ -1,0 +1,30 @@
+# Pin exact versions (pip freeze) once the team's environment is settled.
+
+# Core
+numpy
+pandas
+scipy
+pyyaml
+
+# Geo / graph
+pyproj
+networkx
+
+# Models
+scikit-learn
+xgboost
+lightgbm
+
+# Hyperparameter optimisation
+optuna
+
+# Visualisation
+matplotlib
+folium
+
+# API
+fastapi
+uvicorn
+
+# Notebooks
+jupyter

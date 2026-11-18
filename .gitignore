@@ -1,0 +1,21 @@
+# Raw dataset: kept locally, never committed (see README)
+data/raw/*
+!data/raw/.gitkeep
+
+# Course handouts. Remove this rule if the final report PDF is committed here.
+*.pdf
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS / editor
+Thumbs.db
+desktop.ini
+.DS_Store
