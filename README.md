@@ -137,4 +137,17 @@ pip install -r requirements.txt
 
 ## Running
 
-_To be added: EDA, training, tuning, API and UI commands._
+Generate model reports from the supplied training and student-test partitions
+from the repository root:
+
+```bash
+python3 report.py
+```
+
+The script builds candidate features and route-aligned labels, runs trip-grouped
+cross-validation, writes `results/model_reports/model_comparison.csv`, and
+selects the best model by student-test macro-F1 for
+`results/model_reports/best_model_report.md`. Use `--models` and `--folds` to
+choose models or change the cross-validation fold count. If LightGBM is not
+installed in the active Python environment, the script prints a notice and
+reports the other installed models.

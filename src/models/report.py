@@ -57,6 +57,8 @@ _CSV_COLUMNS = (
     "train_rows",
     "validation_rows",
     "feature_count",
+    "train_candidate_coverage",
+    "validation_candidate_coverage",
     "class_labels_json",
     "train_class_counts_json",
     "validation_class_counts_json",
@@ -114,6 +116,12 @@ def _markdown_report(
     importance = json.loads(record["feature_importance_json"])
     train_class_counts = json.loads(record["train_class_counts_json"])
     validation_class_counts = json.loads(record["validation_class_counts_json"])
+    train_coverage = record["train_candidate_coverage"]
+    validation_coverage = record["validation_candidate_coverage"]
+    train_coverage_text = "N/A" if train_coverage is None else f"{train_coverage:.2%}"
+    validation_coverage_text = (
+        "N/A" if validation_coverage is None else f"{validation_coverage:.2%}"
+    )
 
     lines = [
         f"# Best model report: {model_name}",
@@ -151,6 +159,8 @@ def _markdown_report(
             f"- Training candidate rows: {record['train_rows']}",
             f"- Validation candidate rows: {record['validation_rows']}",
             f"- Numeric features: {record['feature_count']}",
+            f"- Training candidate coverage: {train_coverage_text}",
+            f"- Validation candidate coverage: {validation_coverage_text}",
             f"- Training label counts: `{train_class_counts}`",
             f"- Validation label counts: `{validation_class_counts}`",
             f"- Random state: {record['random_state']}",
@@ -254,6 +264,8 @@ def generate_model_reports(
     model_names: Sequence[str] | None = None,
     feature_names: Sequence[str] | None = None,
     observation_ids: Sequence[Hashable] | None = None,
+    train_candidate_coverage: float | None = None,
+    validation_candidate_coverage: float | None = None,
     n_splits: int = 5,
     random_state: int = 42,
 ) -> dict[str, Any]:
@@ -279,6 +291,11 @@ def generate_model_reports(
         names = [str(name) for name in feature_names]
     if len(names) != X_train_checked.shape[1] or len(set(names)) != len(names):
         raise ValueError("feature_names must be unique and match the feature count.")
+    for coverage in (train_candidate_coverage, validation_candidate_coverage):
+        if coverage is not None and (
+            not np.isfinite(coverage) or not 0 <= coverage <= 1
+        ):
+            raise ValueError("Candidate coverage values must be between 0 and 1.")
 
     models = build_model_registry(random_state, model_names)
     selected_names = tuple(models)
@@ -393,6 +410,8 @@ def generate_model_reports(
                 "train_rows": len(y_train_checked),
                 "validation_rows": len(y_validation_checked),
                 "feature_count": len(names),
+                "train_candidate_coverage": train_candidate_coverage,
+                "validation_candidate_coverage": validation_candidate_coverage,
                 "class_labels_json": json.dumps(classes.tolist(), default=_json_default),
                 "train_class_counts_json": json.dumps(
                     {
