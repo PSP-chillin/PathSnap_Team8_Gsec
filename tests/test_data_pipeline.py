@@ -6,8 +6,15 @@ from pathlib import Path
 import pandas as pd
 
 from src.data.cleaning import clean_trip, clean_trips
-from src.data.loaders import load_split
+from src.data.loaders import load_split, load_trip
 from src.data.validation import validate_trip, validate_trips
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+RAW_DATA_DIR = REPOSITORY_ROOT / "data" / "raw"
+TRAIN_DIR = RAW_DATA_DIR / "train"
+STUDENT_TEST_DIR = RAW_DATA_DIR / "student_test"
+SAMPLE_TRIP_DIR = TRAIN_DIR / "00000001"
 
 
 def make_trip(track: pd.DataFrame | None = None) -> dict[str, pd.DataFrame]:
@@ -98,17 +105,6 @@ class DataPipelineTests(unittest.TestCase):
 
         self.assertEqual(len(caught), 1)
         self.assertIn("Removed 2 invalid and 1 duplicate", str(caught[0].message))
-        print("\nSample cleaning output:")
-        print("Raw track:")
-        print(trip["track"].to_string(index=False))
-        print("Raw validation issues:")
-        for issue in raw_issues:
-            print(f"- {issue}")
-        print(f"Cleaning summary: {caught[0].message}")
-        print("Cleaned track:")
-        print(cleaned["track"].to_string(index=False))
-        print(f"Cleaned validation issues: {validate_trip(cleaned)}")
-
         self.assertEqual(cleaned["track"]["time"].tolist(), [1, 2])
         pd.testing.assert_frame_equal(cleaned["nodes"], original_nodes)
         pd.testing.assert_frame_equal(cleaned["arcs"], original_arcs)
@@ -126,6 +122,48 @@ class DataPipelineTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "No valid GPS observations"):
             clean_trip(invalid_trip)
+
+    @unittest.skipUnless(
+        TRAIN_DIR.is_dir() and STUDENT_TEST_DIR.is_dir(),
+        "Real dataset partitions are not available.",
+    )
+    def test_real_partition_counts(self) -> None:
+        train_count = sum(path.is_dir() for path in TRAIN_DIR.iterdir())
+        student_test_count = sum(
+            path.is_dir() for path in STUDENT_TEST_DIR.iterdir()
+        )
+
+        self.assertEqual(train_count, 80)
+        self.assertEqual(student_test_count, 10)
+
+    @unittest.skipUnless(
+        SAMPLE_TRIP_DIR.is_dir(),
+        "Real training trip data is not available.",
+    )
+    def test_real_training_trip_preview(self) -> None:
+        trip = load_trip(SAMPLE_TRIP_DIR)
+        raw_track_count = len(trip["track"])
+        issues = validate_trip(trip)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            cleaned = clean_trip(trip)
+
+        self.assertGreater(raw_track_count, 0)
+        self.assertGreater(len(cleaned["track"]), 0)
+        self.assertEqual(raw_track_count, len(trip["track"]))
+
+        print("\nReal dataset sample: train/00000001")
+        for table_name, frame in trip.items():
+            print(f"\n{table_name}: {frame.shape[0]} rows")
+            print(frame.head(3).to_string(index=False))
+        print(f"\nRaw validation issues: {issues or 'none'}")
+        print(
+            "Cleaning warnings:",
+            [str(warning.message) for warning in caught] or "none",
+        )
+        print("\nCleaned track preview:")
+        print(cleaned["track"].head(3).to_string(index=False))
 
 
 if __name__ == "__main__":
