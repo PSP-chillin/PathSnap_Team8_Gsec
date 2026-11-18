@@ -15,13 +15,16 @@ _TABLE_COLUMNS = {
 
 def _read_table(path: Path, columns: tuple[str, ...]) -> pd.DataFrame:
     """Read a headerless, comma- or whitespace-separated trip file."""
-    frame = pd.read_csv(
-        path,
-        sep=r"\s+|,",
-        engine="python",
-        header=None,
-        comment="#",
-    )
+    try:
+        frame = pd.read_csv(
+            path,
+            sep=r"\s+|,",
+            engine="python",
+            header=None,
+            comment="#",
+        )
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame(columns=columns)
     if frame.shape[1] != len(columns):
         raise ValueError(
             f"{path} has {frame.shape[1]} columns; expected {len(columns)}."

@@ -115,6 +115,16 @@ class DataPipelineTests(unittest.TestCase):
         trips = {"trip-1": make_trip()}
         self.assertEqual(list(clean_trips(trips)), ["trip-1"])
 
+        empty_route_trip = make_trip()
+        empty_route_trip["route"] = pd.DataFrame(columns=["arc_id"])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            cleaned = clean_trips(
+                {"trip-1": make_trip(), "empty-trip": empty_route_trip}
+            )
+        self.assertEqual(list(cleaned), ["trip-1"])
+        self.assertIn("Dropping trip empty-trip", str(caught[0].message))
+
         invalid_trip = make_trip(
             pd.DataFrame(
                 {"longitude": [181], "latitude": [37.4], "time": [1]}
@@ -122,6 +132,31 @@ class DataPipelineTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "No valid GPS observations"):
             clean_trip(invalid_trip)
+
+    def test_empty_file_is_validated_and_its_trip_is_dropped(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            trip_dir = Path(temp_dir) / "00000002"
+            trip_dir.mkdir()
+            (trip_dir / "00000002.track").write_text(
+                "-122.1 37.4 1\n", encoding="utf-8"
+            )
+            (trip_dir / "00000002.nodes").write_text(
+                "-122.1 37.4\n", encoding="utf-8"
+            )
+            (trip_dir / "00000002.arcs").write_text("0 0\n", encoding="utf-8")
+            (trip_dir / "00000002.route").write_text("", encoding="utf-8")
+
+            trip = load_trip(trip_dir)
+
+        self.assertTrue(trip["route"].empty)
+        self.assertTrue(
+            any("route" in issue and "empty" in issue for issue in validate_trip(trip))
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            cleaned = clean_trips({"00000002": trip, "valid-trip": make_trip()})
+        self.assertEqual(list(cleaned), ["valid-trip"])
+        self.assertIn("Dropping trip 00000002", str(caught[0].message))
 
     @unittest.skipUnless(
         TRAIN_DIR.is_dir() and STUDENT_TEST_DIR.is_dir(),

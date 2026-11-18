@@ -8,6 +8,12 @@ import pandas as pd
 
 
 _TRACK_COLUMNS = ("longitude", "latitude", "time")
+_REQUIRED_TABLE_COLUMNS = {
+    "track": _TRACK_COLUMNS,
+    "nodes": ("longitude", "latitude"),
+    "arcs": ("from_node", "to_node"),
+    "route": ("arc_id",),
+}
 
 
 def clean_trip(trip: Mapping[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
@@ -15,17 +21,22 @@ def clean_trip(trip: Mapping[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
 
     The nodes, arcs, and route tables are copied unchanged.
     """
-    if "track" not in trip or not isinstance(trip["track"], pd.DataFrame):
-        raise ValueError("Trip must contain a 'track' DataFrame.")
     if any(not isinstance(frame, pd.DataFrame) for frame in trip.values()):
         raise ValueError("Every trip table must be a pandas DataFrame.")
 
+    for table_name, columns in _REQUIRED_TABLE_COLUMNS.items():
+        frame = trip.get(table_name)
+        if not isinstance(frame, pd.DataFrame):
+            raise ValueError(f"Trip is missing the '{table_name}' DataFrame.")
+        if frame.empty:
+            raise ValueError(f"Trip has an empty '{table_name}' table.")
+        missing_columns = [column for column in columns if column not in frame]
+        if missing_columns:
+            raise ValueError(
+                f"'{table_name}' is missing columns: {', '.join(missing_columns)}."
+            )
+
     track = trip["track"].copy()
-    missing_columns = [column for column in _TRACK_COLUMNS if column not in track]
-    if missing_columns:
-        raise ValueError(
-            f"'track' is missing columns: {', '.join(missing_columns)}."
-        )
 
     for column in _TRACK_COLUMNS:
         track[column] = pd.to_numeric(track[column], errors="coerce")
@@ -63,8 +74,28 @@ def clean_trip(trip: Mapping[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
 def clean_trips(
     trips: Mapping[str, Mapping[str, pd.DataFrame]],
 ) -> dict[str, dict[str, pd.DataFrame]]:
-    """Clean every trip while preserving trip IDs."""
-    return {
-        trip_id: clean_trip(trip)
-        for trip_id, trip in trips.items()
-    }
+    """Clean trips, dropping any trip with an empty required table."""
+    cleaned: dict[str, dict[str, pd.DataFrame]] = {}
+    for trip_id, trip in trips.items():
+        empty_tables = [
+            table_name
+            for table_name in _REQUIRED_TABLE_COLUMNS
+            if isinstance(trip.get(table_name), pd.DataFrame)
+            and trip[table_name].empty
+        ]
+        if empty_tables:
+            warnings.warn(
+                f"Dropping trip {trip_id}: empty table(s): "
+                f"{', '.join(empty_tables)}.",
+                UserWarning,
+                stacklevel=2,
+            )
+            continue
+        try:
+            cleaned[trip_id] = clean_trip(trip)
+        except ValueError as exc:
+            raise ValueError(f"Cannot clean trip {trip_id}: {exc}") from exc
+
+    if trips and not cleaned:
+        raise ValueError("No trips remain after dropping trips with empty tables.")
+    return cleaned

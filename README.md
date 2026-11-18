@@ -71,7 +71,7 @@ student_test_trips = load_split("data/raw/student_test")
 
 Keep the supplied partitions intact: never move observations or trips between them. Use training trips for fitting and cross-validation, student-testing trips for development-stage comparison, and evaluator-testing data only for final evaluation. Do not use evaluator labels for training, feature selection, or model selection.
 
-`validate_trip` returns a list of issues for one trip, and `validate_trips` returns issues keyed by trip ID. `clean_trip` and `clean_trips` remove invalid or duplicate GPS observations and sort tracks by time; they leave the nodes, arcs, and route tables unchanged. Cleaning emits a warning with the number of removed observations, and validation can be run again afterward.
+`validate_trip` returns a list of issues for one trip, and `validate_trips` returns issues keyed by trip ID. Empty files load as empty DataFrames so validation can report them. `clean_trips` drops and warns about a trip if any required table is empty; missing files or required columns raise an error instead. For retained trips, cleaning removes invalid or duplicate GPS observations and sorts tracks by time; it leaves the nodes, arcs, and route tables unchanged. Validation can be run again afterward.
 
 Run the data pipeline tests from the repository root to see a sample raw and cleaned track:
 
