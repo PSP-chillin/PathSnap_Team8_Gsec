@@ -1,0 +1,5 @@
+# Keep dataset files byte-for-byte as provided (no line-ending conversion)
+*.track -text
+*.nodes -text
+*.arcs  -text
+*.route -text

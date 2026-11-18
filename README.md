@@ -22,7 +22,7 @@ Planned pipeline:
 ```
 ├── configs/            # paths, seeds, parameters
 ├── data/
-│   └── raw/            # dataset goes here (not committed)
+│   └── raw/            # dataset as provided: train/ and student_test/
 ├── notebooks/          # EDA and experiments
 ├── src/
 │   ├── data/           # loading, cleaning, per-point label alignment
@@ -39,7 +39,7 @@ Planned pipeline:
 
 ## Data
 
-The raw dataset is **not committed** to this repository. Place it locally as:
+The dataset is included as provided, under `data/raw/`:
 
 ```
 data/raw/
