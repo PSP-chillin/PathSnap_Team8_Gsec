@@ -28,6 +28,3 @@ uvicorn
 
 # Notebooks
 jupyter
-
-# Testing
-pytest

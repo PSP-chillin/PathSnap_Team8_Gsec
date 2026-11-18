@@ -76,7 +76,7 @@ Keep the supplied partitions intact: never move observations or trips between th
 Run the data, feature, and model tests from the repository root:
 
 ```bash
-python -m pytest
+python -m unittest discover -s tests -v
 ```
 
 ## Models
