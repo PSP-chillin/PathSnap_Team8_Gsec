@@ -3,7 +3,7 @@
 paths:
   train_dir: data/raw/train
   student_test_dir: data/raw/student_test
-  eval_dir: data/raw/eval          # evaluator trips, supplied on evaluation day
+  eval_dir: data/raw/evaluator_test   # evaluator trips, supplied on evaluation day
   artifacts_dir: artifacts
   results_dir: results
 
