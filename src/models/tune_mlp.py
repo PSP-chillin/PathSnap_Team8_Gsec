@@ -1,222 +1,604 @@
-"""Tune the PathSnap MLP using grouped training CV, then evaluate once."""
+"""Tune the MLP on grouped training folds and evaluate on student-test data."""
+
 import argparse
 import json
+from collections.abc import Hashable, Sequence
 from pathlib import Path
 from time import perf_counter
-from .mlp import build_mlp
+from typing import Any
 
 import joblib
 import numpy as np
 import optuna
-import pandas as pd
-from sklearn.metrics import f1_score, log_loss
-from sklearn.model_selection import GroupKFold
+from numpy.typing import ArrayLike
+from sklearn.metrics import accuracy_score, f1_score, log_loss
+from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.utils.validation import check_X_y
 
-SEED = 42
-KEYS = ["trip_id", "obs_idx"]
-
-# Replace with the exact input columns used by the winning baseline.
-# Never include label, ref_arc, ref_dist or ref_in_candidates.
-FEATURES = [
-    "perp_dist", "proj_frac", "dist_to_start", "dist_to_end",
-    "seg_length", "heading_cos", "n_candidates", "dist_rank",
-    "dist_minus_min", "from_in_degree", "from_out_degree",
-    "to_in_degree", "to_out_degree", "has_reverse_arc", "is_dead_end",
-]
-
-# Example only: replace with the settings from your team's winning run.
-BASELINE = {}
+from report import FEATURE_COLUMNS, build_partition_dataset
+from .mlp import build_mlp
 
 
-def make_model(params):
-    model = build_mlp(random_state=SEED)
-    return model.set_params(**{f"classifier__{name}": value for name, value in params.items()})
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_SEED = 42
+ARCHITECTURES = {
+    "32": (32,),
+    "64": (64,),
+    "128": (128,),
+    "64_32": (64, 32),
+    "128_64": (128, 64),
+}
 
 
-def load_split(root, prefix):
-    cand = pd.read_parquet(root / f"{prefix}_candidates.parquet")
-    gps = pd.read_parquet(root / f"{prefix}_gps.parquet").copy()
+def build_grouped_splits(
+    X: ArrayLike,
+    y: ArrayLike,
+    trip_groups: Sequence[object],
+    n_splits: int,
+    random_state: int,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Create stratified folds that keep every trip entirely in one fold."""
+    X_checked, y_checked = check_X_y(X, y)
+    groups = np.asarray(trip_groups)
+    if groups.ndim != 1 or len(groups) != len(y_checked):
+        raise ValueError("trip_groups must contain one trip ID per candidate row.")
+    if n_splits < 2:
+        raise ValueError("n_splits must be at least 2.")
+    if len(np.unique(groups)) < n_splits:
+        raise ValueError("n_splits cannot exceed the number of unique trips.")
+    if not np.isin(y_checked, [0, 1]).all():
+        raise ValueError("MLP tuning requires binary labels 0 and 1.")
 
-    # The earlier runner preserves GPS row order within each trip but
-    # may not explicitly save obs_idx in the GPS parquet.
-    if "obs_idx" not in gps:
-        gps["obs_idx"] = gps.groupby("trip_id", sort=False).cumcount()
-
-    obs = gps[KEYS]
-    if obs.empty or obs.duplicated().any():
-        raise ValueError(f"{prefix}: expected unique, nonempty GPS observation keys.")
-    if cand.empty or not cand["label"].isin([0, 1]).all():
-        raise ValueError(f"{prefix}: expected nonempty candidates with binary labels.")
-    if cand.duplicated(KEYS + ["arc_id"]).any():
-        raise ValueError(f"{prefix}: duplicate candidate arcs for an observation.")
-
-    missing = set(FEATURES) - set(cand.columns)
-    if missing:
-        raise ValueError(f"{prefix}: missing model features: {sorted(missing)}")
-    if not pd.MultiIndex.from_frame(cand[KEYS]).isin(
-        pd.MultiIndex.from_frame(obs)
-    ).all():
-        raise ValueError(f"{prefix}: candidate keys don't match GPS keys.")
-
-    return cand.reset_index(drop=True), obs
-
-
-def model_inputs(cand):
-    return cand[FEATURES].replace([np.inf, -np.inf], np.nan)
-
-
-def top1_counts(cand, scores, n_obs):
-    ranked = cand[KEYS + ["arc_id", "label"]].assign(score=np.asarray(scores))
-    winners = (
-        ranked.sort_values(
-            ["score", "arc_id"], ascending=[False, True]
-        ).drop_duplicates(KEYS)
+    splitter = StratifiedGroupKFold(
+        n_splits=n_splits,
+        shuffle=True,
+        random_state=random_state,
     )
-    # Equal scores are broken by lower arc ID, not by the reference label.
-    return int(winners["label"].sum()), n_obs
+    splits = list(splitter.split(X_checked, y_checked, groups))
+    for train_indices, validation_indices in splits:
+        train_trips = set(groups[train_indices])
+        validation_trips = set(groups[validation_indices])
+        if train_trips & validation_trips:
+            raise RuntimeError("A trip was split across a training fold.")
+        if not np.array_equal(
+            np.unique(y_checked[train_indices]),
+            np.array([0, 1]),
+        ):
+            raise ValueError("A training fold lacks one of the two label classes.")
+    return splits
 
 
-def candidate_miss_rate(cand, n_obs):
-    covered = cand.loc[cand["label"].eq(1), KEYS].drop_duplicates()
-    return 1.0 - len(covered) / n_obs
+def score_predictions(
+    y_true: ArrayLike,
+    predictions: ArrayLike,
+    probabilities: ArrayLike,
+    observation_ids: Sequence[Hashable],
+) -> dict[str, float]:
+    """Score candidate classification and the top-ranked arc per observation."""
+    y_checked = np.asarray(y_true)
+    predictions_checked = np.asarray(predictions)
+    probabilities_checked = np.asarray(probabilities, dtype=float)
+    if y_checked.ndim != 1 or predictions_checked.shape != y_checked.shape:
+        raise ValueError("Predictions must have one binary label per candidate.")
+    if probabilities_checked.shape != (len(y_checked), 2):
+        raise ValueError("Expected one probability column for each binary class.")
+    if len(observation_ids) != len(y_checked):
+        raise ValueError("observation_ids must have one value per candidate.")
+    if not np.isin(y_checked, [0, 1]).all():
+        raise ValueError("MLP tuning requires binary labels 0 and 1.")
+    if not np.isfinite(probabilities_checked).all():
+        raise ValueError("Predicted probabilities must be finite.")
 
+    candidates_by_observation: dict[Hashable, list[int]] = {}
+    for index, observation_id in enumerate(observation_ids):
+        candidates_by_observation.setdefault(observation_id, []).append(index)
+    if not candidates_by_observation:
+        raise ValueError("Cannot score an empty candidate set.")
 
-def grouped_folds(obs, n_splits):
-    # Split the GPS table, not the candidate table, so trips with zero
-    # candidates still contribute to the validation denominator.
-    return GroupKFold(n_splits=n_splits).split(obs, groups=obs["trip_id"])
-
-
-def cv_top1(params, cand, obs, folds):
-    correct = total = 0
-    for fit_idx, val_idx in folds:
-        fit_trips = obs.iloc[fit_idx]["trip_id"]
-        val_trips = obs.iloc[val_idx]["trip_id"]
-        train = cand[cand["trip_id"].isin(fit_trips)]
-        valid = cand[cand["trip_id"].isin(val_trips)]
-
-        if train["label"].nunique() != 2:
-            raise ValueError("A training fold lacks both classes. Check your labels.")
-
-        model = make_model(params)
-        model.fit(model_inputs(train), train["label"])
-        scores = (
-            model.predict_proba(model_inputs(valid))[:, 1]
-            if not valid.empty else np.array([])
+    top1_correct = 0
+    for indices in candidates_by_observation.values():
+        best_index = max(
+            indices,
+            key=lambda index: probabilities_checked[index, 1],
         )
-        hits, n = top1_counts(valid, scores, len(val_idx))
-        correct += hits
-        total += n
+        top1_correct += int(y_checked[best_index] == 1)
 
-    # Pool observations across folds, rather than weighting every fold equally.
-    return correct / total
-
-
-def trial_params(trial):
-    layouts = {
-        "64": (64,),
-        "128": (128,),
-        "64_32": (64, 32),
-        "128_64": (128, 64),
-    }
     return {
-        "hidden_layer_sizes": layouts[
-            trial.suggest_categorical("architecture", list(layouts))
-        ],
-        "activation": trial.suggest_categorical("activation", ["relu", "tanh"]),
-        "alpha": trial.suggest_float("alpha", 1e-6, 1e-1, log=True),
-        "learning_rate_init": trial.suggest_float(
-            "learning_rate_init", 1e-4, 1e-2, log=True
+        "macro_f1": float(
+            f1_score(
+                y_checked,
+                predictions_checked,
+                labels=[0, 1],
+                average="macro",
+                zero_division=0,
+            )
         ),
-        "batch_size": trial.suggest_categorical("batch_size", [64, 128, 256]),
+        "candidate_accuracy": float(
+            accuracy_score(y_checked, predictions_checked)
+        ),
+        "candidate_log_loss": float(
+            log_loss(y_checked, probabilities_checked, labels=[0, 1])
+        ),
+        "top1_accuracy": top1_correct / len(candidates_by_observation),
     }
 
 
-def evaluate(model, cand, obs):
-    start = perf_counter()
-    scores = model.predict_proba(model_inputs(cand))[:, 1]
-    predict_seconds = perf_counter() - start
-    hits, n_obs = top1_counts(cand, scores, len(obs))
-    return {
-        "top1_accuracy": hits / n_obs,
-        "candidate_log_loss": float(log_loss(cand["label"], scores, labels=[0, 1])),
-        "candidate_f1_at_0_5": float(
-            f1_score(cand["label"], scores >= 0.5, zero_division=0)
-        ),
-        "candidate_miss_rate": candidate_miss_rate(cand, n_obs),
-        "predict_seconds": predict_seconds,
-    }
+def make_model(
+    params: dict[str, Any] | None = None,
+    random_state: int = DEFAULT_SEED,
+):
+    """Build the standard-scaled MLP, optionally overriding classifier settings."""
+    model = build_mlp(random_state=random_state)
+    if params:
+        model.set_params(
+            **{
+                f"classifier__{name}": value
+                for name, value in params.items()
+            }
+        )
+    return model
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--features-dir", type=Path, default=Path("features"))
-    parser.add_argument("--out", type=Path, default=Path("artifacts/mlp"))
-    parser.add_argument("--trials", type=int, default=30)
-    parser.add_argument("--folds", type=int, default=5)
-    parser.add_argument(
-        "--cv-only", action="store_true",
-        help="Run the search without reading student-testing data.",
+def trial_parameters(trial: optuna.Trial) -> dict[str, Any]:
+    """Sample a practical MLP architecture and optimizer configuration."""
+    architecture = trial.suggest_categorical(
+        "architecture",
+        list(ARCHITECTURES),
     )
-    args = parser.parse_args()
+    return {
+        "hidden_layer_sizes": ARCHITECTURES[architecture],
+        "activation": trial.suggest_categorical(
+            "activation",
+            ["relu", "tanh"],
+        ),
+        "alpha": trial.suggest_float("alpha", 1e-6, 1e-2, log=True),
+        "learning_rate_init": trial.suggest_float(
+            "learning_rate_init",
+            1e-4,
+            5e-3,
+            log=True,
+        ),
+        "batch_size": trial.suggest_categorical(
+            "batch_size",
+            [64, 128, 256],
+        ),
+        "max_iter": trial.suggest_categorical("max_iter", [100, 200]),
+        "early_stopping": True,
+    }
+
+
+def cross_validate_mlp(
+    X: ArrayLike,
+    y: ArrayLike,
+    observation_ids: Sequence[Hashable],
+    splits: Sequence[tuple[np.ndarray, np.ndarray]],
+    params: dict[str, Any] | None = None,
+    random_state: int = DEFAULT_SEED,
+    trial: optuna.Trial | None = None,
+) -> dict[str, Any]:
+    """Evaluate an MLP configuration using precomputed trip-grouped folds."""
+    X_checked, y_checked = check_X_y(X, y)
+    if len(observation_ids) != len(y_checked):
+        raise ValueError("observation_ids must have one value per candidate.")
+    if not splits:
+        raise ValueError("At least one cross-validation fold is required.")
+
+    fold_results = []
+    fold_macro_f1 = []
+    for fold_number, (train_indices, validation_indices) in enumerate(splits):
+        if not np.array_equal(
+            np.unique(y_checked[train_indices]),
+            np.array([0, 1]),
+        ):
+            raise ValueError("A training fold lacks one of the two label classes.")
+
+        model = make_model(params, random_state=random_state)
+        started_at = perf_counter()
+        model.fit(X_checked[train_indices], y_checked[train_indices])
+        fit_seconds = perf_counter() - started_at
+        probabilities = model.predict_proba(X_checked[validation_indices])
+        metrics = score_predictions(
+            y_checked[validation_indices],
+            model.predict(X_checked[validation_indices]),
+            probabilities,
+            [observation_ids[index] for index in validation_indices],
+        )
+        metrics["fit_seconds"] = fit_seconds
+        fold_results.append(metrics)
+        fold_macro_f1.append(metrics["macro_f1"])
+
+        if trial is not None:
+            trial.report(
+                float(np.mean(fold_macro_f1)),
+                step=fold_number,
+            )
+            if trial.should_prune():
+                raise optuna.TrialPruned()
+
+    metric_names = fold_results[0].keys()
+    return {
+        "folds": fold_results,
+        "mean": {
+            metric: float(np.mean([fold[metric] for fold in fold_results]))
+            for metric in metric_names
+        },
+        "std": {
+            metric: float(np.std([fold[metric] for fold in fold_results]))
+            for metric in metric_names
+        },
+    }
+
+
+def _fit_and_score(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_validation: np.ndarray,
+    y_validation: np.ndarray,
+    observation_ids: Sequence[Hashable],
+    params: dict[str, Any] | None,
+    random_state: int,
+) -> tuple[Any, dict[str, float]]:
+    model = make_model(params, random_state=random_state)
+    started_at = perf_counter()
+    model.fit(X_train, y_train)
+    fit_seconds = perf_counter() - started_at
+    metrics = score_predictions(
+        y_validation,
+        model.predict(X_validation),
+        model.predict_proba(X_validation),
+        observation_ids,
+    )
+    metrics["fit_seconds"] = fit_seconds
+    return model, metrics
+
+
+def _format_score(value: float | None) -> str:
+    return "N/A" if value is None else f"{value:.4f}"
+
+
+def _write_markdown(
+    report: dict[str, Any],
+    output_path: Path,
+) -> None:
+    baseline_cv = report["baseline_cv"]
+    tuned_cv = report["tuned_cv"]
+    lines = [
+        "# MLP hyperparameter tuning report",
+        "",
+        "Hyperparameters were selected using the mean macro-F1 from "
+        "stratified, trip-grouped cross-validation on the training partition. "
+        "The student-test partition was not used during the search.",
+        "",
+        "## Cross-validation results",
+        "",
+        "| Configuration | Mean macro-F1 | Std macro-F1 | Mean top-1 accuracy |",
+        "| --- | ---: | ---: | ---: |",
+        f"| Baseline MLP | {_format_score(baseline_cv['mean']['macro_f1'])} | "
+        f"{_format_score(baseline_cv['std']['macro_f1'])} | "
+        f"{_format_score(baseline_cv['mean']['top1_accuracy'])} |",
+        f"| Tuned MLP | {_format_score(tuned_cv['mean']['macro_f1'])} | "
+        f"{_format_score(tuned_cv['std']['macro_f1'])} | "
+        f"{_format_score(tuned_cv['mean']['top1_accuracy'])} |",
+        "",
+        f"- Trials: {report['completed_trials']} completed, "
+        f"{report['pruned_trials']} pruned, "
+        f"{report['total_trials']} total.",
+        f"- Search time: {report['search_seconds']:.2f} seconds",
+        f"- Training trips: {report['train_trip_count']}",
+        f"- Training candidate rows: {report['train_candidate_rows']}",
+        f"- Training candidate coverage: "
+        f"{report['train_candidate_coverage']:.2%}",
+        f"- Sampling: {report['sampling_description']}",
+    ]
+
+    student_test = report.get("student_test")
+    if student_test is not None:
+        lines.extend(
+            [
+                "",
+                "## Final student-test comparison",
+                "",
+                "These scores are a final comparison after the grouped-CV "
+                "search; they did not choose the hyperparameters.",
+                "",
+                "| Configuration | Macro-F1 | Candidate accuracy | Top-1 accuracy | Log loss | Fit seconds |",
+                "| --- | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for name in ("baseline", "tuned"):
+            metrics = student_test[name]
+            lines.append(
+                f"| {name.title()} MLP | "
+                f"{_format_score(metrics['macro_f1'])} | "
+                f"{_format_score(metrics['candidate_accuracy'])} | "
+                f"{_format_score(metrics['top1_accuracy'])} | "
+                f"{_format_score(metrics['candidate_log_loss'])} | "
+                f"{metrics['fit_seconds']:.2f} |"
+            )
+
+    lines.extend(
+        [
+            "",
+            "## Selected hyperparameters",
+            "",
+            "```json",
+            json.dumps(report["tuned_params"], indent=2, sort_keys=True),
+            "```",
+            "",
+            "## Run outputs",
+            "",
+            f"- Trial history: `{report['trials_csv']}`",
+            f"- Machine-readable report: `{report['json_path']}`",
+            "",
+        ]
+    )
+    if report["model_path"] is not None:
+        lines.insert(
+            -1,
+            f"- Fitted tuned model: `{report['model_path']}`",
+        )
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Tune the MLP with grouped training CV and compare on student-test."
+        )
+    )
+    parser.add_argument(
+        "--train-dir",
+        type=Path,
+        default=ROOT / "data" / "raw" / "train",
+        help="Training partition directory.",
+    )
+    parser.add_argument(
+        "--validation-dir",
+        type=Path,
+        default=ROOT / "data" / "raw" / "student_test",
+        help="Held-out student-test partition used only after tuning.",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=ROOT / "results" / "mlp_tuning",
+        help="Directory for tuning outputs.",
+    )
+    parser.add_argument(
+        "--trials",
+        type=int,
+        default=20,
+        help="Number of Optuna trials.",
+    )
+    parser.add_argument(
+        "--folds",
+        type=int,
+        default=3,
+        help="Number of trip-grouped cross-validation folds.",
+    )
+    parser.add_argument(
+        "--max-observations-per-trip",
+        type=int,
+        default=25,
+        help="Observations retained per trip; 0 uses all observations.",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Optional search timeout in seconds.",
+    )
+    parser.add_argument(
+        "--random-state",
+        type=int,
+        default=DEFAULT_SEED,
+        help="Seed for data splits, Optuna, and MLP initialization.",
+    )
+    parser.add_argument(
+        "--cv-only",
+        action="store_true",
+        help="Skip the student-test evaluation and final model fit.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = _arguments()
+    if args.trials < 1:
+        raise ValueError("--trials must be at least 1.")
+    if args.folds < 2:
+        raise ValueError("--folds must be at least 2.")
+    if args.max_observations_per_trip < 0:
+        raise ValueError("--max-observations-per-trip cannot be negative.")
+    if args.timeout is not None and args.timeout <= 0:
+        raise ValueError("--timeout must be positive.")
     args.out.mkdir(parents=True, exist_ok=True)
 
-    train, train_obs = load_split(args.features_dir, "train")
-    folds = list(grouped_folds(train_obs, args.folds))
-    baseline_cv = cv_top1(BASELINE, train, train_obs, folds)
+    sample_limit = args.max_observations_per_trip or None
+    sampling_description = (
+        "All observations used."
+        if sample_limit is None
+        else (
+            f"At most {sample_limit} evenly spaced observations per trip; "
+            "all candidates for selected observations retained."
+        )
+    )
+    training = build_partition_dataset(args.train_dir, sample_limit)
+    splits = build_grouped_splits(
+        training.X,
+        training.y,
+        training.trip_groups,
+        args.folds,
+        args.random_state,
+    )
 
-    start = perf_counter()
+    baseline_cv = cross_validate_mlp(
+        training.X,
+        training.y,
+        training.observation_ids,
+        splits,
+        random_state=args.random_state,
+    )
+    sampler = optuna.samplers.TPESampler(seed=args.random_state)
+    pruner = optuna.pruners.MedianPruner(
+        n_startup_trials=min(5, args.trials),
+        n_warmup_steps=1,
+    )
     study = optuna.create_study(
         direction="maximize",
-        sampler=optuna.samplers.TPESampler(seed=SEED, n_startup_trials=5),
+        sampler=sampler,
+        pruner=pruner,
     )
+    started_at = perf_counter()
     study.optimize(
-        lambda trial: cv_top1(trial_params(trial), train, train_obs, folds),
+        lambda trial: cross_validate_mlp(
+            training.X,
+            training.y,
+            training.observation_ids,
+            splits,
+            params=trial_parameters(trial),
+            random_state=args.random_state,
+            trial=trial,
+        )["mean"]["macro_f1"],
         n_trials=args.trials,
+        timeout=args.timeout,
         n_jobs=1,
+        show_progress_bar=True,
     )
-    search_seconds = perf_counter() - start
-    best = trial_params(optuna.trial.FixedTrial(study.best_params))
-    study.trials_dataframe().to_csv(args.out / "trials.csv", index=False)
+    search_seconds = perf_counter() - started_at
+    if not study.best_trials:
+        raise RuntimeError("The tuning search completed without a successful trial.")
 
-    report = {
-        "seed": SEED,
-        "folds": args.folds,
-        "features": FEATURES,
-        "train_trips": int(train_obs["trip_id"].nunique()),
-        "train_observations": len(train_obs),
-        "train_candidate_miss_rate": candidate_miss_rate(train, len(train_obs)),
-        "baseline_params": BASELINE,
-        "tuned_params": best,
-        "baseline_cv_top1": baseline_cv,
-        "tuned_cv_top1": study.best_value,
+    best_trial = study.best_trial
+    best_params = trial_parameters(optuna.trial.FixedTrial(best_trial.params))
+    tuned_cv = cross_validate_mlp(
+        training.X,
+        training.y,
+        training.observation_ids,
+        splits,
+        params=best_params,
+        random_state=args.random_state,
+    )
+    trials_csv = args.out / "trials.csv"
+    study.trials_dataframe().to_csv(
+        trials_csv,
+        index=False,
+        lineterminator="\n",
+    )
+
+    report: dict[str, Any] = {
+        "selection_metric": "grouped_cv_macro_f1",
+        "random_state": args.random_state,
+        "fold_count": args.folds,
+        "total_trials": len(study.trials),
+        "completed_trials": sum(
+            trial.state == optuna.trial.TrialState.COMPLETE
+            for trial in study.trials
+        ),
+        "pruned_trials": sum(
+            trial.state == optuna.trial.TrialState.PRUNED
+            for trial in study.trials
+        ),
         "search_seconds": search_seconds,
+        "feature_columns": list(FEATURE_COLUMNS),
+        "sampling_description": sampling_description,
+        "train_trip_count": training.trip_count,
+        "train_candidate_rows": len(training.y),
+        "train_candidate_coverage": training.candidate_coverage,
+        "baseline_params": {
+            key: value
+            for key, value in build_mlp(
+                random_state=args.random_state
+            ).named_steps["classifier"].get_params().items()
+            if key
+            in {
+                "hidden_layer_sizes",
+                "activation",
+                "alpha",
+                "learning_rate_init",
+                "batch_size",
+                "max_iter",
+                "early_stopping",
+            }
+        },
+        "tuned_params": best_params,
+        "optuna_best_params": best_trial.params,
+        "baseline_cv": baseline_cv,
+        "tuned_cv": tuned_cv,
+        "trials_csv": str(trials_csv),
+        "model_path": None,
     }
 
     if not args.cv_only:
-        test, test_obs = load_split(args.features_dir, "student_test")
-        overlap = set(train_obs["trip_id"]) & set(test_obs["trip_id"])
+        validation = build_partition_dataset(
+            args.validation_dir,
+            sample_limit,
+        )
+        training_trip_ids = {summary.trip_id for summary in training.data_quality.trips}
+        validation_trip_ids = {
+            summary.trip_id for summary in validation.data_quality.trips
+        }
+        overlap = training_trip_ids & validation_trip_ids
         if overlap:
-            raise ValueError(f"Trip IDs overlap across splits: {sorted(overlap)}")
+            raise ValueError(
+                "Trip IDs overlap between training and student-test partitions: "
+                + ", ".join(sorted(overlap))
+            )
 
-        for name, params in [("baseline", BASELINE), ("tuned", best)]:
-            model = make_model(params)
-            start = perf_counter()
-            model.fit(model_inputs(train), train["label"])
-            fit_seconds = perf_counter() - start
-            report[f"{name}_student_test"] = {
-                **evaluate(model, test, test_obs),
-                "fit_seconds": fit_seconds,
-            }
-            if name == "tuned":
-                joblib.dump(
-                    {"pipeline": model, "features": FEATURES},
-                    args.out / "tuned_mlp.joblib",
-                )
+        _, baseline_metrics = _fit_and_score(
+            training.X,
+            training.y,
+            validation.X,
+            validation.y,
+            validation.observation_ids,
+            params=None,
+            random_state=args.random_state,
+        )
+        tuned_model, tuned_metrics = _fit_and_score(
+            training.X,
+            training.y,
+            validation.X,
+            validation.y,
+            validation.observation_ids,
+            params=best_params,
+            random_state=args.random_state,
+        )
+        model_path = args.out / "tuned_mlp.joblib"
+        joblib.dump(
+            {
+                "pipeline": tuned_model,
+                "feature_columns": list(FEATURE_COLUMNS),
+                "parameters": best_params,
+            },
+            model_path,
+        )
+        report["student_test"] = {
+            "baseline": baseline_metrics,
+            "tuned": tuned_metrics,
+            "candidate_rows": len(validation.y),
+            "trip_count": validation.trip_count,
+            "candidate_coverage": validation.candidate_coverage,
+        }
+        report["model_path"] = str(model_path)
 
-    text = json.dumps(report, indent=2)
-    (args.out / "report.json").write_text(text + "\n")
-    print(text)
+    json_path = args.out / "tuning_report.json"
+    report["json_path"] = str(json_path)
+    json_path.write_text(
+        json.dumps(report, indent=2, default=str) + "\n",
+        encoding="utf-8",
+    )
+    markdown_path = args.out / "tuning_report.md"
+    _write_markdown(report, markdown_path)
+
+    print(f"Tuning report: {markdown_path}")
+    print(f"Trial history: {trials_csv}")
+    if report["model_path"] is not None:
+        print(f"Tuned MLP model: {report['model_path']}")
+    print(
+        "Best grouped-CV macro-F1: "
+        f"{tuned_cv['mean']['macro_f1']:.4f} "
+        f"(baseline {baseline_cv['mean']['macro_f1']:.4f})"
+    )
 
 
 if __name__ == "__main__":

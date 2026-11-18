@@ -159,3 +159,16 @@ for each sampled observation. The reports record this sampling. Use
 longer, full-data run. Use `--models` to choose models. If LightGBM is not
 installed in the active Python environment, the script prints a notice and
 reports the other installed models.
+
+Tune the MLP separately with Optuna:
+
+```bash
+python3 -m src.models.tune_mlp --trials 20 --folds 3
+```
+
+The search maximizes mean macro-F1 over trip-grouped folds from `train`.
+`student_test` is used only for the final baseline-versus-tuned comparison.
+Outputs are written to `results/mlp_tuning/`: a Markdown and JSON report, the
+Optuna trial history CSV, and the fitted `tuned_mlp.joblib` model. Use
+`--cv-only` to skip loading `student_test`, `--timeout` to cap search duration,
+or `--max-observations-per-trip 0` for a longer full-data run.
